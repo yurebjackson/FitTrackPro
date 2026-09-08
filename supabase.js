@@ -205,36 +205,20 @@ async function dbGetAllPlans() {
   return data ?? [];
 }
  
-async function dbCreatePlan(studentId, name, description, days) {
-  const user = await getCurrentUser();
- 
-  const { data: plan, error: planErr } = await supabaseClient
-    .from('plans')
-    .insert([{ student_id: studentId, professor_id: user.id, name, description }])
-    .select()
-    .single();
-  if (planErr) throw planErr;
- 
-  for (let i = 0; i < days.length; i++) {
-    const day = days[i];
-    const { data: planDay, error: dayErr } = await supabaseClient
-      .from('plan_days')
-      .insert([{ plan_id: plan.id, label: day.label, sort_order: i }])
-      .select()
-      .single();
-    if (dayErr) throw dayErr;
- 
-    for (let j = 0; j < day.exercises.length; j++) {
-      const { error: exErr } = await supabaseClient
-        .from('plan_exercises')
-        .insert([{ plan_day_id: planDay.id, exercise_id: day.exercises[j], sort_order: j }]);
-      if (exErr) throw exErr;
-    }
-  }
- 
-  return plan;
+async function dbSavePlanAtomic(planId, studentId, name, description, days) {
+  const { data, error } = await supabaseClient.rpc('save_plan_atomic', {
+    p_plan_id: planId, p_student_id: studentId, p_name: name,
+    p_description: description, p_days: days,
+  });
+  if (error) throw error;
+  if (!data?.id || !Array.isArray(data.plan_days)) throw new Error('Resposta do plano inválida');
+  return data;
 }
- 
+
+async function dbCreatePlan(studentId, name, description, days) {
+  return dbSavePlanAtomic(null, studentId, name, description, days);
+}
+
 async function dbDeletePlan(planId) {
   const { error } = await supabaseClient.from('plans').delete().eq('id', planId);
   if (error) throw error;

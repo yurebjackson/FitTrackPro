@@ -76,13 +76,9 @@ async function savePlan() {
   try {
     const plan = await dbCreatePlan(studentId, name, description, days);
 
-    // Recarrega plano com JOIN completo
-    const fresh = await dbGetPlansForStudent(studentId);
-    const newPlan = fresh.find(p => p.id === plan.id);
-    if (newPlan) PLANS.push(normalizePlan(newPlan));
-
-    // Reseta progresso do aluno ao criar plano novo
-    await resetStudentProgress(studentId);
+    PLANS.push(normalizePlan(plan));
+    const student = STUDENTS.find(s => s.id === studentId);
+    if (student) student.progress = 0;
 
     closeM('moNewPlan');
     showToast('Plano criado!');

@@ -3785,45 +3785,9 @@ async function updatePlan() {
   setBtnLoading('btnUpdatePlan', true);
 
   try {
-    // Deleta plan_days existentes (cascade deleta plan_exercises)
-    const { error: delErr } = await supabaseClient
-      .from('plan_days')
-      .delete()
-      .eq('plan_id', planId);
-    if (delErr) throw delErr;
-
-    // Atualiza dados do plano
-    const { error: planErr } = await supabaseClient
-      .from('plans')
-      .update({ name, description, student_id: studentId })
-      .eq('id', planId);
-    if (planErr) throw planErr;
-
-    // Recria os dias e exercícios
-    for (let i = 0; i < days.length; i++) {
-      const day = days[i];
-      const { data: planDay, error: dayErr } = await supabaseClient
-        .from('plan_days')
-        .insert([{ plan_id: planId, label: day.label, sort_order: i }])
-        .select()
-        .single();
-      if (dayErr) throw dayErr;
-
-      for (let j = 0; j < day.exercises.length; j++) {
-        const { error: exErr } = await supabaseClient
-          .from('plan_exercises')
-          .insert([{ plan_day_id: planDay.id, exercise_id: day.exercises[j], sort_order: j }]);
-        if (exErr) throw exErr;
-      }
-    }
-
-    // Recarrega os planos
-    const fresh = await dbGetPlansForStudent(studentId);
-    const updated = fresh.find(p => p.id === planId);
-    if (updated) {
-      const idx = PLANS.findIndex(p => p.id === planId);
-      if (idx !== -1) PLANS[idx] = normalizePlan(updated);
-    }
+    const updated = await dbSavePlanAtomic(planId, studentId, name, description, days);
+    const idx = PLANS.findIndex(p => p.id === planId);
+    if (idx !== -1) PLANS[idx] = normalizePlan(updated);
 
     closeM('moEditPlan');
     showToast('Plano atualizado com sucesso!', 'sucesso');
