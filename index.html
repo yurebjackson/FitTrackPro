@@ -2229,6 +2229,7 @@ function toggleDay(di) {
 }
 
 async function toggleDone(key, el, sid, di, dayLabel, exName) {
+  if (finishingWorkout || pendingWorkout) return;
   // Só permite marcar se o treino foi iniciado
   if (trainDayIndex !== di) {
     showToast('Inicie o treino primeiro!', 'aviso');
@@ -2246,31 +2247,67 @@ async function toggleDone(key, el, sid, di, dayLabel, exName) {
 // ============================================================
 // PERSISTÊNCIA DO TREINO (sobrevive a refresh)
 // ============================================================
-function saveWorkoutState() {
-  const state = {
-    trainDayIndex,
-    trainStartTime,
-    completedEx,
+let workoutContextKey = null;
+let pendingWorkout = null;
+function getWorkoutContext() {
+  const student = STUDENTS.find(s => s.id === curUser?.sid);
+  const planId = student?.plan_id || student?.plan;
+  const plan = planId ? getPlanById(planId) : PLANS[0];
+  if (!CURRENT_USER?.id || !student || !plan) return null;
+  return {
+    key: `eritrain_workout:v2:${CURRENT_USER.id}:${student.id}:${plan.id}`,
+    signature: JSON.stringify(plan.days.map(d => [d.id, d.label, d.exercises])),
+    plan,
   };
-  try { localStorage.setItem('eritrain_workout', JSON.stringify(state)); } catch(_) {}
+}
+
+function resetWorkoutSession() {
+  clearInterval(trainTimer);
+  trainTimer = null;
+  trainDayIndex = trainStartTime = null;
+  completedEx = {};
+  openDays = {};
+  pendingWorkout = null;
+  workoutContextKey = null;
+  document.getElementById('moFinish')?.remove();
+  document.getElementById('moFeedback')?.classList.remove('op');
+}
+
+function saveWorkoutState() {
+  const context = getWorkoutContext();
+  if (!context || context.key !== workoutContextKey) return false;
+  try {
+    if (trainDayIndex === null) localStorage.removeItem(context.key);
+    else localStorage.setItem(context.key, JSON.stringify({
+      signature: context.signature, trainDayIndex, trainStartTime, completedEx, pendingWorkout,
+    }));
+    return true;
+  } catch (_) { return false; }
 }
 
 function loadWorkoutState() {
+  const context = getWorkoutContext();
+  resetWorkoutSession();
+  if (!context) return;
+  workoutContextKey = context.key;
   try {
-    const raw = localStorage.getItem('eritrain_workout');
+    localStorage.removeItem('eritrain_workout'); // Formato antigo sem identificação segura.
+    const raw = localStorage.getItem(context.key);
     if (!raw) return;
     const state = JSON.parse(raw);
-    // Só restaura se foi hoje
-    if (!state.trainStartTime) return;
-    const savedDate = new Date(state.trainStartTime).toDateString();
-    if (savedDate !== new Date().toDateString()) {
-      localStorage.removeItem('eritrain_workout');
+    if (state.signature !== context.signature ||
+        !Number.isInteger(state.trainDayIndex) || !context.plan.days[state.trainDayIndex] ||
+        !Number.isFinite(state.trainStartTime) || state.trainStartTime > Date.now() ||
+        (!state.pendingWorkout && new Date(state.trainStartTime).toDateString() !== new Date().toDateString())) {
+      localStorage.removeItem(context.key);
       return;
     }
-    trainDayIndex  = state.trainDayIndex;
+    trainDayIndex = state.trainDayIndex;
     trainStartTime = state.trainStartTime;
-    completedEx    = state.completedEx ?? {};
-  } catch(_) {}
+    const keys = new Set(context.plan.days[trainDayIndex].exercises.map(id => `${trainDayIndex}-${id}`));
+    completedEx = Object.fromEntries(Object.entries(state.completedEx || {}).filter(([key, value]) => keys.has(key) && value === true));
+    pendingWorkout = state.pendingWorkout || null;
+  } catch (_) { /* Estado inválido não é restaurado. */ }
 }
 
 function resumeTimerIfActive() {
@@ -2286,6 +2323,16 @@ function resumeTimerIfActive() {
 }
 
 function startWorkout(di, dayLabel) {
+  if (finishingWorkout || pendingWorkout) {
+    showToast('Tente concluir o treino pendente antes de iniciar outro.', 'aviso');
+    return;
+  }
+  if (trainDayIndex !== null) {
+    showToast('Conclua o treino em andamento primeiro.', 'aviso');
+    return;
+  }
+  workoutContextKey = getWorkoutContext()?.key ?? null;
+  completedEx = {};
   // Para timer anterior se existir
   if (trainTimer) clearInterval(trainTimer);
   trainDayIndex  = di;
@@ -2318,8 +2365,10 @@ function startWorkout(di, dayLabel) {
 let finishingWorkout = false;
 
 async function finishWorkout(di, dayLabel, exIds) {
-  if (finishingWorkout) return; // evita duplo clique
+  if (finishingWorkout || trainDayIndex !== di || !trainStartTime) return;
+  const contextKey = workoutContextKey;
   finishingWorkout = true;
+  try {
 
   // Desativa o botão que disparou o evento
   document.querySelectorAll('[onclick*="finishWorkout"]').forEach(btn => {
@@ -2349,37 +2398,52 @@ async function finishWorkout(di, dayLabel, exIds) {
   const sid = curUser.sid;
 
   // Salva no histórico e captura o objeto retornado (para o feedback)
-  const histEntry = await registerHistory(sid, {
+  pendingWorkout ??= { entry: {
+    id:      crypto.randomUUID(),
     date:    new Date().toISOString().slice(0, 10),
     type:    'treino',
     label:   dayLabel,
     details: `${done}/${total} exercícios · ${timeStr}`,
     tags:    ['treino'],
-  });
+  }, progress: Math.min(100, (STUDENTS.find(s => s.id === sid)?.progress ?? 0) + Math.round(pct / 10)),
+     timeStr, done, total, pct, dayLabel, motivacional };
+  if (!saveWorkoutState()) throw new Error('Não foi possível preservar a tentativa neste navegador. Libere o armazenamento e tente novamente.');
+  const pending = pendingWorkout;
+  const histEntry = await registerHistory(sid, pending.entry);
+  if (workoutContextKey !== contextKey) return;
 
   // Atualiza progresso do aluno no banco
   const student = STUDENTS.find(s => s.id === sid);
   if (student) {
-    const newProgress = Math.min(100, (student.progress ?? 0) + Math.round(pct / 10));
-    try {
+    const newProgress = pending.progress;
       await dbUpdateStudentProgress(sid, newProgress);
+      if (workoutContextKey !== contextKey) return;
       student.progress = newProgress;
-    } catch (e) {
-      console.warn('Erro ao salvar progresso:', e.message);
-    }
   }
 
   // Limpa estado do treino e localStorage
   trainDayIndex    = null;
   trainStartTime   = null;
   completedEx      = {};
-  finishingWorkout = false;
+  pendingWorkout   = null;
   saveWorkoutState();
 
   // Mostra modal de resumo e abre feedback em seguida
-  showFinishModal(dayLabel, timeStr, done, total, pct, motivacional, histEntry => {
-    openFeedbackModal(histEntry?.id ?? null);
+  showFinishModal(pending.dayLabel, pending.timeStr, pending.done, pending.total, pending.pct, pending.motivacional, () => {
+    openFeedbackModal(histEntry.id);
   });
+  } catch (err) {
+    if (workoutContextKey === contextKey) {
+      showToast('Não foi possível concluir o registro. Seu treino foi preservado; tente concluir novamente. ' + err.message, 'erro');
+      resumeTimerIfActive();
+    }
+  } finally {
+    finishingWorkout = false;
+    document.querySelectorAll('[onclick*="finishWorkout"]').forEach(btn => {
+      btn.disabled = false;
+      btn.style.opacity = '';
+    });
+  }
 }
 
 function showFinishModal(dayLabel, timeStr, done, total, pct, msg, onFeedback) {
@@ -3372,6 +3436,9 @@ function openFeedbackModal(historyId) {
 }
 
 async function saveFeedback() {
+  if (!feedbackHistoryId) {
+    showToast('Conclua o registro do treino antes de enviar o feedback.', 'aviso'); return;
+  }
   if (!selectedEffort) {
     showToast('Selecione o nível de esforço', 'aviso'); return;
   }

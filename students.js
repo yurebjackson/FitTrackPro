@@ -182,13 +182,14 @@ async function saveAvaliacao() {
 // TRAINING HISTORY  (aluno registra exercício concluído)
 // ============================================================
 async function registerHistory(studentId, entry) {
-  try {
-    const saved = await dbAddHistory(studentId, entry);
-    const s = STUDENTS.find(st => st.id === studentId);
-    if (s) s.history.unshift(saved);
-  } catch (err) {
-    console.error('registerHistory:', err);
+  const saved = await dbAddHistory(studentId, entry);
+  if (!saved?.id) throw new Error('O histórico salvo não foi confirmado.');
+  const s = STUDENTS.find(st => st.id === studentId);
+  if (s) {
+    s.history ??= [];
+    if (!s.history.some(item => item.id === saved.id)) s.history.unshift(saved);
   }
+  return saved;
 }
 
 // ============================================================

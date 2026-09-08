@@ -26,6 +26,7 @@ async function signIn(email, password) {
 }
  
 async function signOut() {
+  if (typeof resetWorkoutSession === 'function') resetWorkoutSession();
   await supabaseClient.auth.signOut();
 }
  
@@ -116,7 +117,9 @@ async function dbUpdateStudentProgress(studentId, progress) {
     .from('students')
     .update({ progress })
     .eq('id', studentId)
-    .eq('user_id', user.id);
+    .eq('user_id', user.id)
+    .select('id')
+    .single();
   if (error) throw error;
 }
  
@@ -295,6 +298,14 @@ async function dbAddHistory(studentId, entry) {
     .insert([{ student_id: studentId, ...entry }])
     .select()
     .single();
+  // Uma resposta perdida pode levar à repetição de um INSERT já confirmado.
+  // O mesmo ID é reutilizado; nunca atualizamos um histórico existente.
+  if (error && entry.id) {
+    const { data: existing, error: readError } = await supabaseClient
+      .from('training_history').select('*')
+      .eq('id', entry.id).eq('student_id', studentId).maybeSingle();
+    if (!readError && existing) return existing;
+  }
   if (error) throw error;
   return data;
 }

@@ -366,6 +366,7 @@ async function doChangeFirstPassword() {
 // Helpers de interface
 // ============================================================
 function showLoginScreen() {
+  if (typeof resetWorkoutSession === 'function') resetWorkoutSession();
   document.getElementById('MA').style.display = 'none';
   document.getElementById('LS').style.display = 'flex';
   document.getElementById('lEmail').value = '';
