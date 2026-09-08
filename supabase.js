@@ -520,6 +520,23 @@ async function dbCreateProfessorViaFunction(name, email, planType) {
   return json;
 }
 
+async function dbAdminProfessorEmail(payload) {
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (!session?.access_token) throw new Error('Entre novamente no sistema.');
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-professor-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${session.access_token}` },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((json.error || 'Não foi possível acessar o serviço de e-mail.') +
+    (json.currentEmail ? ` E-mail atual do login: ${json.currentEmail}.` : ''));
+  if (typeof json.email !== 'string' || json.id !== payload.profId)
+    throw new Error('Resposta de e-mail inválida. Consulte novamente.');
+  return json;
+}
+
 // ============================================================
 // STUDENT EXERCISE CONFIG (séries/reps personalizadas)
 // ============================================================

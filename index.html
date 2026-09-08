@@ -375,6 +375,13 @@ body{transition:background .2s,color .2s}
         <input class="fi" id="epEditName" placeholder="Nome do professor"/>
       </div>
       <div class="fg">
+        <label class="fl" for="epEditEmail">E-mail de acesso</label>
+        <input class="fi" id="epEditEmail" type="email" autocomplete="off" disabled/>
+        <p id="epEmailStatus" role="status" style="font-size:12px;margin:8px 0;color:var(--color-text-secondary)"></p>
+        <button class="bas" id="btnChangeProfEmail" onclick="adminChangeProfEmail()" disabled>Alterar e-mail de acesso</button>
+        <button class="bas" id="btnReloadProfEmail" onclick="adminLoadProfEmail()">Consultar novamente</button>
+      </div>
+      <div class="fg">
         <label class="fl">Plano</label>
         <select class="fsel" id="epEditPlan">
           <option value="basic">Basic — até 10 alunos</option>
@@ -2957,6 +2964,76 @@ function adminOpenEditProf(profId) {
   document.getElementById('epEditName').value     = p.name;
   document.getElementById('epEditPlan').value     = p.plan_type ?? 'basic';
   openM('moEditProf');
+  adminLoadProfEmail();
+}
+
+let adminEmailRequest = 0;
+let adminEmailSnapshot = null;
+let adminEmailSaving = false;
+
+async function adminLoadProfEmail() {
+  if (adminEmailSaving) return;
+  const request = ++adminEmailRequest;
+  const profId = document.getElementById('epId').value;
+  adminEmailSnapshot = null;
+  const input = document.getElementById('epEditEmail');
+  const status = document.getElementById('epEmailStatus');
+  input.value = '';
+  input.disabled = true;
+  document.getElementById('btnChangeProfEmail').disabled = true;
+  status.textContent = 'Consultando e-mail de acesso…';
+  try {
+    const result = await dbAdminProfessorEmail({ action: 'inspect', profId });
+    if (request !== adminEmailRequest || document.getElementById('epId').value !== profId) return;
+    adminEmailSnapshot = result;
+    input.value = result.email;
+    input.disabled = false;
+    document.getElementById('btnChangeProfEmail').disabled = false;
+    status.textContent = (result.emailConfirmed ? 'Confirmação registrada no Supabase.' : 'Sem confirmação registrada no Supabase.') +
+      (result.profileEmail !== result.email ? ' O e-mail do perfil está diferente; salve este endereço para sincronizar.' : '');
+  } catch (err) {
+    if (request === adminEmailRequest && document.getElementById('epId').value === profId)
+      status.textContent = err.message;
+  }
+}
+
+async function adminChangeProfEmail() {
+  if (adminEmailSaving || !adminEmailSnapshot) return;
+  const profId = document.getElementById('epId').value;
+  if (adminEmailSnapshot.id !== profId) return;
+  const input = document.getElementById('epEditEmail');
+  const email = input.value.trim().toLowerCase();
+  if (!email || !input.checkValidity()) { showToast('Informe um e-mail válido.', 'aviso'); return; }
+  if (!confirm(`Alterar o e-mail de acesso de ${adminEmailSnapshot.email} para ${email}? O professor usará ${email} no próximo login.`)) return;
+  adminEmailSaving = true;
+  input.disabled = true;
+  document.getElementById('btnChangeProfEmail').disabled = true;
+  document.getElementById('btnReloadProfEmail').disabled = true;
+  document.getElementById('epEmailStatus').textContent = 'Salvando e-mail…';
+  try {
+    const saved = await dbAdminProfessorEmail({ action: 'update', profId, email, expectedEmail: adminEmailSnapshot.email });
+    const p = PROFESSORES.find(x => x.id === profId);
+    if (p) p.email = saved.email;
+    if (document.getElementById('epId').value === profId) {
+      adminEmailSnapshot = saved;
+      input.value = saved.email;
+      document.getElementById('epEmailStatus').textContent = 'E-mail salvo. ' +
+        (saved.emailConfirmed ? 'Confirmação registrada no Supabase.' : 'Sem confirmação registrada no Supabase.');
+    }
+    showToast('E-mail de acesso atualizado!', 'sucesso');
+  } catch (err) {
+    if (document.getElementById('epId').value === profId) {
+      adminEmailSnapshot = null;
+      document.getElementById('epEmailStatus').textContent = err.message + ' Clique em Consultar novamente antes de repetir.';
+    }
+  } finally {
+    adminEmailSaving = false;
+    document.getElementById('btnReloadProfEmail').disabled = false;
+    const same = document.getElementById('epId').value === profId;
+    input.disabled = !same || !adminEmailSnapshot;
+    document.getElementById('btnChangeProfEmail').disabled = !same || !adminEmailSnapshot;
+    if (!same) adminLoadProfEmail();
+  }
 }
 
 async function adminSaveEditProf() {
@@ -2968,7 +3045,8 @@ async function adminSaveEditProf() {
 
   setBtnLoading('btnSaveEditProf', true);
   try {
-    await supabaseClient.from('profiles').update({ name, plan_type: plan }).eq('id', profId);
+    const { error } = await supabaseClient.from('profiles').update({ name, plan_type: plan }).eq('id', profId).select('id').single();
+    if (error) throw error;
     const p = PROFESSORES.find(x => x.id === profId);
     if (p) { p.name = name; p.plan_type = plan; }
     closeM('moEditProf');
